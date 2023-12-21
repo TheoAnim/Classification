@@ -74,7 +74,8 @@ kable(summary.stats,
 # #write.csv(cl.summary, "summary.csv")
 ```
 
-The variables, Area and Convex Area, had the largest range for the bean dataset. There are large differences in the range of variables, the variables with larger ranges can dominate over those with small ranges which may lead to biased results.
+The variables, Area and Convex Area, had the largest range for the bean dataset. There are large differences in the range of variables, 
+the variables with larger ranges can dominate over those with small ranges which may lead to biased results.
 
 
 
