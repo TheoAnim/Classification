@@ -1,6 +1,6 @@
 ---
 title: "data"
-author: "Emmanuel Boah"
+author: ""
 date: "2023-03-07"
 output:
   pdf_document: default
