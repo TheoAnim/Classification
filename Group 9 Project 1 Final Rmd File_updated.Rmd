@@ -1,0 +1,455 @@
+---
+title: "data"
+author: "Emmanuel Boah"
+date: "2023-03-07"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE,message=FALSE)
+```
+
+```{r}
+
+# Libraries
+
+library(caTools)
+library(rpart) 
+library(maptree)
+library(class)
+library(caret)
+library(kableExtra)
+library(ggplot2)
+library(summarytools)
+library(GGally)
+library(corrplot)
+library(pls)
+library(factoextra)
+library(energy)
+library(scales)
+library(MASS)
+library(mclust)
+library(ellipse)
+
+```
+
+
+```{r}
+## Reading data into R
+
+labeled<-read.csv("labeled.csv")
+dat <- labeled
+
+
+```
+
+
+```{r}
+  ### Remove column one since it is not neccessary for the analysis
+
+dat=dat[,-1]
+```
+
+## Summary Statistics
+
+
+```{r}
+##Summary Statistics of our data set
+summary.stats <- round(as.data.frame((dat[,-8])%>% #we ignore the categorical feature 'class'
+                                       psych::describe())%>%
+                         dplyr::select(n,mean, sd, median, min, max,range), 2)
+#write.csv (summary.stats,'summary_stat_bn.csv') wrtite the data into a table 
+
+kable(summary.stats, 
+      caption="Statistical Distribution of Features of Dry Beans",
+      col.names = c("Count","Mean","Standard Deviation","Median","Minimum","Maximum","Range"))
+
+# ########Summary Statistics based on Dry beans class###################
+# cl.summary<- dat %>%
+#   group_by(Class) %>%
+#   summarise(across(where(is.numeric), mean))
+# kable(cl.summary)
+# #write.csv(cl.summary, "summary.csv")
+```
+
+The variables, Area and Convex Area, had the largest range for the bean dataset. There are large differences in the range of variables, the variables with larger ranges can dominate over those with small ranges which may lead to biased results.
+
+
+
+
+### Box Plots
+
+
+```{r}
+## Boxplot by Beans Class
+
+par(mfrow=c(2,2))
+# Box plot for Zone Area Based on Class of beans
+ggplot(dat, aes(x=as.factor(Class), y=Area, fill = as.factor(Class))) + geom_boxplot()+
+  labs(title = "Bean Area",x="Beans Class", y = "Beans Area")
+# Box plot for perimeter Based on Class of beans
+ggplot(dat, aes(x=as.factor(Class), y=Perimeter, fill = as.factor(Class))) + geom_boxplot()+ labs(title="Bean Perimeter",x="Beans Class", y = "Beans Perimeter")
+
+# Box plot for MajorAxisLength Based on Class of beans
+ggplot(dat, aes(x=as.factor(Class), y=MajorAxisLength, fill = as.factor(Class))) + geom_boxplot()+ labs(title="Major Axis Length of Beans",x="Beans Class", y = "Major Axis Length")
+
+# Box plot for MinorAxisLength Based on Class of beans
+ggplot(dat, aes(x=as.factor(Class), y=MinorAxisLength, fill = as.factor(Class))) + geom_boxplot()+ labs(title="Minor Axis Length of Beans",x="Beans Class", y = "Minor Axis Length")
+
+# Box plot for Eccentricity Based on Class of beans
+ggplot(dat, aes(x=as.factor(Class), y=Eccentricity, fill = as.factor(Class))) + geom_boxplot()+ labs(title="Eccentricity of Beans",x="Beans Class", y = "Eccentricity")
+
+# Box plot for ConvexArea Based on Class of beans
+ggplot(dat, aes(x=as.factor(Class), y=ConvexArea, fill = as.factor(Class))) + geom_boxplot()+ labs(title="Convex Area of Beans",x="Beans Class", y = "Convex Area")
+
+# Box plot for Extent Based on Class of beans
+ggplot(dat, aes(x=as.factor(Class), y=Extent, fill = as.factor(Class))) + geom_boxplot()+ labs(title="Extent of Beans",x="Beans Class", y = "Extent")
+
+```
+
+
+The different boxplots show us non-equal variability amongst classes.
+
+
+
+
+```{r fig.height=8, fig.width=8}
+#correlation plot
+ggpairs(dat[,1:7], aes(color = dat$Class), lower=list(continuous=GGally::wrap("points", size = .01))) #try to reduce overplotting by setting size to 0.01
+```
+
+### comment
+
+The correlation plot shows a strong relationship between Area and Convex Area with a correlation coefficient of 0.992(ignoring the classes). There is also a strong positive relationship between Area and perimeter with a correlation coefficient of 0.896. Again the correlation coefficient is 0.949 for Area and Major Axis length and 0.952 for Area and Minor Axis Length. Consider the classes, we also see some predictors are correlated(refer to upper panel). For instance, Area and Convex Area has 0.97 correlation coefficient within the BOMBAY class. These raise the concern of multicollinearity among the predictors. Some of the analysis may not be efficient in the presence of multicollinearity. Hence, we will adopt the principal component analysis to reduce the dimensionality for the KNN analysis. We transform the predictors and then fit the models.
+
+
+
+
+
+
+
+### Dividing the Original data into train and test
+
+Here, we divide the original data into 70% train and 30% test data
+
+```{r}
+set.seed(1)
+  
+tr70= sample.split(Y =dat$Class, SplitRatio = 0.7)
+train.set = dat[tr70,]
+test.set = dat[!tr70,]
+```
+
+
+```{r}
+table(train.set$Class)
+table(test.set$Class)
+str(dat)
+```
+
+
+# LDA
+LDA, QDA require the observations in each class to follow a MultiVariet Normal (MVN). In this problem, it does appear that the observations do not follow a MVN. That raises suspicion in fitting LDA or QDA to the data. In the face of the assumption not being satisfied, we attempt a 10-fold cross validation of each model to see the overall accuracy.
+
+```{r}
+
+#check group multivariate normality using the mvnorm.etest function in the energy library
+
+#groups
+for (i in 1:length(unique(dat$Class))){
+  da.ta = (dat[dat$Class == unique(dat$Class)[i], ])
+  t.mnv <- mvnorm.etest(da.ta[,-c(8)], R = 500)
+  print(t.mnv)
+}
+```
+
+The Multivariate normality assumption is not met in each case since the individual pvalues are less than 0.05. We do the 10 fold cross validation.
+
+
+```{r}
+set.seed(13)
+library(MASS)
+
+# Set up cross-validation
+n_folds <- 10
+
+fold_size <- nrow(dat) %/% n_folds #fold size of 300
+
+folds <- rep(1:n_folds, each = fold_size) 
+
+#check if sample size is divisible by k
+#else increase number of folds to capture all obs
+if (nrow(dat) %% n_folds != 0) {
+  folds <- c(folds, rep(n_folds, nrow(dat) %% n_folds))
+}
+
+folds <- tapply(sample(1:nrow(dat)), folds, function(x) dat[x, ]) #rows to use, each class has equal samples
+
+#function to fit LDA model and compute accuracy
+lda.mod.fnx <- function(train.samp, test.samp) {
+  lda_fit <- lda(Class ~ ., data = train.samp)
+  pred <- predict(lda_fit, newdata = test.samp)
+  accuracy <- mean(pred$class == test.samp$Class)
+  return(accuracy)
+}
+
+#fnx for QDA and accuracy
+qda.mod.fnx <- function(train.samp, test.samp){
+  qda_fit <- qda(Class~., data = train.samp)
+  pred <- predict(qda_fit, newdata = test.samp[,-9])
+  accuracy <- mean(pred$class==test.samp$Class)
+}
+
+# Run cross-validation
+lda.accuracies <- rep(NA, n_folds) #store accuracy for each fold
+qda.accuracies <- rep(NA, n_folds)
+for (i in 1:n_folds) {
+  test_fold <- folds[[i]]
+  train_folds <- folds[-i]
+  train_data <- do.call(rbind, train_folds)
+  lda.accuracies[i] <- lda.mod.fnx(train_data, test_fold)
+  qda.accuracies[i] <- qda.mod.fnx(train_data, test_fold)
+}
+
+# Compute average accuracy
+cat("LDA Average accuracy:", mean(lda.accuracies), "\n")
+cat("QDA Average accuracy:", mean(qda.accuracies), "\n")
+```
+
+The overall accuracy for the LDA is 85.7% whereas the QDA has an overall accuracy of 90.7% It does not appear the LDA, QDA models accuracy is due to randomness. We go ahead with LDA, QDA model building
+
+ 
+
+```{r}
+
+lda.fit = lda(Class~ Area + Perimeter + MajorAxisLength + MinorAxisLength + Eccentricity + ConvexArea + Extent, data = train.set)
+
+lda.predict = predict(lda.fit, test.set[,-9]) ## predicting using test data
+lda.class = lda.predict$class
+
+lda.table = table(lda.class, test.set$Class) ## table that shows our predictions versus the actual.
+lda.table
+mean(lda.class == test.set$Class) ## the number of times that our actual is equal to the predicted. This gives the accuracy rate of the model
+
+pounds = 453.592
+
+##calculating the value of the beans on the market based on our predictions
+#(no of seeds*grams per seed)/pounds) * price per pound
+Bombay = ((150*1.92)/pounds)*5.56
+Cali = ((149*0.61)/pounds)*6.02
+Dermason = ((148*0.28)/pounds)*1.98
+Horoz = ((138*0.52)/pounds)*2.43
+seker = ((139*0.49)/pounds)*2.72
+sira = ((176*0.38)/pounds)*5.40
+
+total_Value = Bombay + Cali + Dermason + Horoz + seker + sira
+cat("LDA total value:", round(total_Value,2), "\n")
+
+
+## Calculating the cost of misclassification
+#pick no of misclassified seeds * price per pound
+cali = 16*0.008095822
+der = 35*0.001222244
+horoz = 27*0.002785763
+seker = 22*0.002938323
+sir=  38*0.004523889
+
+lda.misclassification = Cali+ der + horoz + seker + sir
+cat("LDA cost of misclassification:", round(lda.misclassification,2), "\n")
+```
+
+
+
+## QDA
+```{r}
+qda.fit = qda(Class~ Area + Perimeter + MajorAxisLength + MinorAxisLength + Eccentricity + ConvexArea + Extent, data = train.set)
+qda.predict = predict(qda.fit, test.set[,-9]) #predicting using test data
+qda.class = as.factor(qda.predict$class)
+
+table(qda.class, as.factor(test.set$Class)) ## table that shows our predictions versus the actual.
+
+mean(qda.class == test.set$Class) ## the number of times that our actual is equal to the predicted. This gives the accuracy rate of the model
+
+
+##calculating the value of the beans on the market base on our predictions
+Bombay = ((151*1.92)/pounds)*5.56
+Cali = ((147*0.61)/pounds)*6.02
+Dermason = ((153*0.28)/pounds)*1.98
+Horoz = ((146*0.52)/pounds)*2.43
+seker = ((146*0.49)/pounds)*2.72
+sira = ((157*0.38)/pounds)*5.40
+
+total_Value = Bombay + Cali + Dermason + Horoz + seker + sira
+
+
+
+## Calulating the cost of misclassification
+Bomb = 1*0.02353481 #number of misclassification multiplied by price per pound of a seed variety
+cali = 5*0.008095822
+der = 24*0.001222244
+horoz = 11*0.002785763
+seker = 14*0.002938323
+sir=  34*0.004523889
+
+
+qda.misclassification = Cali+ der + horoz + seker + sir
+
+
+cat("QDA total value:", round(total_Value,2), "\n")
+cat("QDA cost of misclassification:", round(qda.misclassification,2), "\n")
+```
+
+
+This section builds the LDA and QDA models using the training dataset and all the variables. Predictions were made using the test data. Base on our predictions, we calculated the accuracy rate of the both models. The results shows that our LDA and QDA correctly predicted the class of the seeds 84.66% and 90.1% of the time respectively. We further predicted the value of beans on the market, taking into account the cost of misclassification.The value of the bean for the LDA and QDA are $6.51$ and $6.48 respectively. The cost of misclassification differs for both models, with LDA having a cost of $1.56 and QDA $1.45. Considering both Models, LDA has a higher error rate which explains its higher cost of misclassification. 
+
+
+
+### Principal Component Analysis
+
+Principal component analysis (PCA) is a technique used to reduce the dimensionality of large data sets while retaining as much of the original information as possible. It achieves this by transforming the data into a new coordinate system, where the new axes are linear combinations of the original variables. The PCA also helps to transform a data that has correlated predictors to principal components that are uncorrelated. The PCA is necessary for the KNN analysis because, there is an assumption of no multicollinearity when using the KNN. 
+
+The KNN is a supervised machine learning algorithm for classification (In our scenario). It classifies a new data (test data) based on the majority class of its k nearest neighbors in the training data. The performance of the KNN model is very sensitive to the chose of k. Hence we fit the KNN with different values of k and choose the value of k that has the highest(lowest) accuracy rate(error rate). The KNN is a non-parametric method and hence it is distribution free.We did the KNN analysis below.
+
+```{r}
+
+pca.prcomp=prcomp(dat[,1:7], scale. = TRUE, center=TRUE)  ## The principal component analysis
+fviz_eig(pca.prcomp) # the scree plot
+newdat=as.data.frame(pca.prcomp$x)
+newdat=newdat[,1:4]
+newdat$Class=dat$Class
+
+```
+
+### comment
+
+The first principal components explains about 68% of variances in the data. The second, third and fourth principal components explain about 19%, 10% and 2% of the variation in the data. Overall, the first four principal components explain about 99% of the variance. 
+
+
+
+### Creating training and test data from the prinicipal components
+
+From the new predictors created by using the PCA, we tend to divide this data into 70% training and 30% testing data.
+
+```{r}
+set.seed(1)
+  
+tr70= sample.split(Y =newdat$Class, SplitRatio = 0.7)
+train.pca = newdat[tr70,]
+test.pca = newdat[!tr70,]
+```
+
+
+```{r}
+table(train.pca$Class)
+table(test.pca$Class)
+str(newdat)
+```
+
+# The LOOCV K-Nearest Neighbors using the Original data
+
+The code chunk below does the leave one out cross validation with different k values using the original data that has most of the predictors correlated. The errors are extracted for each value of k and plotted. The plot helps to detect the value of K that minimizes the error better.
+
+```{r}
+set.seed(1)
+
+k=1:25
+error=1:25
+error=data.frame(k=c(k),error=c(error))
+for (i in 1:25){
+  model<- knn.cv(train.set[,c(1:7)], train.set$Class, k = k[i])
+  error$error[i]  <-mean(model != train.set$Class)
+}
+
+plot(error, type="o", ylab="CV Error Rate", main="Training Error for Different K", col="red")
+
+which.min(error$error)
+##k=23 gives the minimum error of the training model
+```
+
+### Refitting the KNN model Using K=23 on the Orginal data
+
+After getting the desired k from the previous code chunk, the KNN is fitted again and it predictions accuracy is checked.
+
+```{r}
+set.seed(1)
+knn.pred2<-knn(train.set[,1:7], test.set[,1:7], train.set$Class, k = 23)
+accuracy=round(mean(knn.pred2==test.set$Class),2)
+table(test.set$Class,knn.pred2)
+print(paste0("accuracy using the Original data: ", accuracy))
+
+
+```
+
+
+# The LOOCV K-Nearest Neighbors using the PCA
+
+The code chunk below does the leave one out cross validation with different k values using the 4 principal components that explains about 99% of the variance. The errors are extracted for each value of k and plotted. The plot helps to detect the value of K that minimizes the error better.
+
+```{r}
+## Checking the k value that minimizes the error
+
+set.seed(1)
+
+k=1:25
+error.pca=1:25
+error.pca=data.frame(k=c(k),error.pca=c(error.pca))
+for (i in 1:25){
+  model.pca<- knn.cv(train.pca[,1:4], train.pca$Class, k = k[i])
+  error.pca$error.pca[i]  <-mean(model.pca != train.pca$Class)
+}
+
+plot(error.pca, type="o", ylab="CV Error Rate", main="Test Error for Different K", col="blue")
+which.min(error.pca$error.pca)
+#k=23 gives the minimum error rate
+```
+
+### Refitting the KNN model Using K=23 on the PCA
+
+After getting the desired k from the code chunk above using the 4 components, the KNN is fitted again and it predictions accuracy is checked.
+
+
+```{r}
+set.seed(1)
+knn.pred8.pca<-knn(train.pca[,1:4], test.pca[,1:4], train.pca$Class, k = 23)
+accuracy=round(mean(knn.pred8.pca==test.pca$Class),2)
+table(knn.pred8.pca,test.pca$Class)
+
+print(paste0("Accuracy rate using the PCA: ", accuracy))
+
+```
+
+
+
+
+##calculating the value of the beans on the market base on our predictions
+
+```{r}
+Bombay = ((150*1.92)/pounds)*5.56
+Cali = ((154*0.61)/pounds)*6.02
+Dermason = ((148*0.28)/pounds)*1.98
+Horoz = ((130*0.52)/pounds)*2.43
+seker = ((150*0.49)/pounds)*2.72
+sira = ((168*0.38)/pounds)*5.40
+
+total_Value = Bombay + Cali + Dermason + Horoz + seker + sira
+
+
+## Calulating the cost of misclassification
+
+cali = 15*0.008095822
+der = 28*0.001222244
+horoz = 8*0.002785763
+seker = 18*0.002938323
+sir=  52*0.004523889
+
+KNN.misclassification = cali+ der + horoz + seker + sir
+cat("Total value using KNN on PCA model:", round(total_Value,2), "\n")
+cat("Cost of Misclassification of KNN on PCA model:", round(KNN.misclassification,2), "\n")
+```
+
+
+## comment
+
+The prediction accuracy is 67% when the original data is used as opposed to 86% for using the principal components for the KNN analysis. We will choose using the principal components for the KNN analysis. Using the KNN, the value of the bean based on our model predictions is $6.50323. The cost of our model's misclassification is \$0.423.
